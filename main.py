@@ -61,3 +61,36 @@ async def stats(values: str = ""):
         "max": max(nums),
         "mean": sum(nums) / len(nums),
     }
+
+
+# ---------- Q4: token verification ----------
+from pathlib import Path
+
+import jwt
+
+ISSUER = "https://idp.exam.local"
+AUDIENCE = "tds-k8lmgsvw.apps.exam.local"
+PUBLIC_KEY = (Path(__file__).parent / "public_key.pem").read_text()
+
+
+@app.post("/verify")
+async def verify(request: Request):
+    try:
+        body = await request.json()
+        token = body["token"]
+        claims = jwt.decode(
+            token,
+            PUBLIC_KEY,
+            algorithms=["RS256"],
+            audience=AUDIENCE,
+            issuer=ISSUER,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except Exception:
+        return JSONResponse({"valid": False}, status_code=401)
+    return {
+        "valid": True,
+        "email": claims.get("email"),
+        "sub": claims.get("sub"),
+        "aud": claims.get("aud"),
+    }
