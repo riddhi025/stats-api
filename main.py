@@ -1,13 +1,18 @@
+import os
 import time
 import uuid
+from pathlib import Path
 
+import jwt
+import redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+app = FastAPI()
+
+# ---------- Q3 ----------
 ALLOWED_ORIGIN = "https://dash-vw2tce.example.com"
 EMAIL = "25f1001383@ds.study.iitm.ac.in"
-
-app = FastAPI()
 
 
 @app.middleware("http")
@@ -26,7 +31,6 @@ async def cors_and_headers(request: Request, call_next):
                 response.headers["Access-Control-Allow-Headers"] = requested or "*"
                 response.headers["Access-Control-Max-Age"] = "600"
         else:
-            # any other origin: rejected, and no Access-Control-Allow-Origin header
             response = Response(status_code=403)
     else:
         response = await call_next(request)
@@ -63,11 +67,7 @@ async def stats(values: str = ""):
     }
 
 
-# ---------- Q4: token verification ----------
-from pathlib import Path
-
-import jwt
-
+# ---------- Q4 ----------
 ISSUER = "https://idp.exam.local"
 AUDIENCE = "tds-k8lmgsvw.apps.exam.local"
 PUBLIC_KEY = (Path(__file__).parent / "public_key.pem").read_text()
@@ -94,3 +94,27 @@ async def verify(request: Request):
         "sub": claims.get("sub"),
         "aud": claims.get("aud"),
     }
+
+
+# ---------- Q6 ----------
+rds = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
+
+
+@app.post("/hit/{key}")
+def hit(key: str):
+    return {"key": key, "count": rds.incr(f"hits:{key}")}
+
+
+@app.get("/count/{key}")
+def count(key: str):
+    value = rds.get(f"hits:{key}")
+    return {"key": key, "count": int(value) if value else 0}
+
+
+@app.get("/healthz")
+def healthz():
+    try:
+        rds.ping()
+        return {"status": "ok", "redis": "up"}
+    except Exception:
+        return JSONResponse({"status": "error", "redis": "down"}, status_code=503)
