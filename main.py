@@ -1,6 +1,9 @@
+import json
 import os
 import time
 import uuid
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 import jwt
@@ -10,17 +13,25 @@ from fastapi.responses import JSONResponse, Response
 
 app = FastAPI()
 
-# ---------- CORS + headers (Q3 strict on everything, Q7 open on /analytics) ----------
-ALLOWED_ORIGIN = "https://dash-vw2tce.example.com"
 EMAIL = "25f1001383@ds.study.iitm.ac.in"
+ALLOWED_ORIGIN = "https://dash-vw2tce.example.com"
+
+# ---------- Q8 state ----------
+START = time.monotonic()
+REQUEST_COUNT = 0
+LOGS = deque(maxlen=1000)
 
 
 @app.middleware("http")
 async def cors_and_headers(request: Request, call_next):
+    global REQUEST_COUNT
+    REQUEST_COUNT += 1
+    request_id = str(uuid.uuid4())
     start = time.perf_counter()
+
     origin = request.headers.get("origin")
     allowed = origin == ALLOWED_ORIGIN
-    public = request.url.path == "/analytics"
+    public = request.url.path == "/analytics"  # Q7 is open to all origins
 
     if request.method == "OPTIONS":
         if public:
@@ -48,9 +59,22 @@ async def cors_and_headers(request: Request, call_next):
             response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
             response.headers["Access-Control-Expose-Headers"] = "X-Request-ID, X-Process-Time"
 
+    elapsed = time.perf_counter() - start
     response.headers["Vary"] = "Origin"
-    response.headers["X-Request-ID"] = str(uuid.uuid4())
-    response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time"] = f"{elapsed:.6f}"
+
+    entry = {
+        "level": "INFO",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "path": request.url.path,
+        "request_id": request_id,
+        "method": request.method,
+        "status": response.status_code,
+        "duration_ms": round(elapsed * 1000, 3),
+    }
+    LOGS.append(entry)
+    print(json.dumps(entry), flush=True)
     return response
 
 
@@ -122,13 +146,15 @@ def count(key: str):
     return {"key": key, "count": int(value) if value else 0}
 
 
+# ---------- Q6 + Q8 health ----------
 @app.get("/healthz")
 def healthz():
+    uptime = round(time.monotonic() - START, 3)
     try:
         rds.ping()
-        return {"status": "ok", "redis": "up"}
+        return {"status": "ok", "redis": "up", "uptime_s": uptime}
     except Exception:
-        return JSONResponse({"status": "error", "redis": "down"}, status_code=503)
+        return JSONResponse({"status": "error", "redis": "down", "uptime_s": uptime}, status_code=503)
 
 
 # ---------- Q7 ----------
@@ -163,3 +189,31 @@ async def analytics(request: Request):
         "revenue": round(revenue, 6),
         "top_user": top_user,
     }
+
+
+# ---------- Q8 ----------
+@app.get("/work")
+def work(n: int = 1):
+    if n < 0 or n > 1_000_000:
+        return JSONResponse({"error": "n must be between 0 and 1000000"}, status_code=400)
+    acc = 0
+    for i in range(n):
+        acc += i * i
+    return {"email": EMAIL, "done": n}
+
+
+@app.get("/metrics")
+def metrics():
+    text = (
+        "# HELP http_requests_total Total HTTP requests handled.\n"
+        "# TYPE http_requests_total counter\n"
+        f"http_requests_total {REQUEST_COUNT}\n"
+    )
+    return Response(text, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/logs/tail")
+def logs_tail(limit: int = 10):
+    if limit <= 0:
+        return []
+    return list(LOGS)[-min(limit, 1000):]
