@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response
 
 app = FastAPI()
 
-# ---------- Q3 ----------
+# ---------- CORS + headers (Q3 strict on everything, Q7 open on /analytics) ----------
 ALLOWED_ORIGIN = "https://dash-vw2tce.example.com"
 EMAIL = "25f1001383@ds.study.iitm.ac.in"
 
@@ -20,9 +20,17 @@ async def cors_and_headers(request: Request, call_next):
     start = time.perf_counter()
     origin = request.headers.get("origin")
     allowed = origin == ALLOWED_ORIGIN
+    public = request.url.path == "/analytics"
 
     if request.method == "OPTIONS":
-        if origin is None or allowed:
+        if public:
+            response = Response(status_code=200)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+            requested = request.headers.get("access-control-request-headers")
+            response.headers["Access-Control-Allow-Headers"] = requested or "Content-Type, X-API-Key"
+            response.headers["Access-Control-Max-Age"] = "600"
+        elif origin is None or allowed:
             response = Response(status_code=200)
             if allowed:
                 response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
@@ -34,7 +42,9 @@ async def cors_and_headers(request: Request, call_next):
             response = Response(status_code=403)
     else:
         response = await call_next(request)
-        if allowed:
+        if public:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        elif allowed:
             response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
             response.headers["Access-Control-Expose-Headers"] = "X-Request-ID, X-Process-Time"
 
@@ -49,6 +59,7 @@ async def root():
     return {"status": "ok"}
 
 
+# ---------- Q3 ----------
 @app.get("/stats")
 async def stats(values: str = ""):
     try:
@@ -118,3 +129,37 @@ def healthz():
         return {"status": "ok", "redis": "up"}
     except Exception:
         return JSONResponse({"status": "error", "redis": "down"}, status_code=503)
+
+
+# ---------- Q7 ----------
+@app.post("/analytics")
+async def analytics(request: Request):
+    expected = os.getenv("ANALYTICS_API_KEY", "")
+    given = request.headers.get("x-api-key")
+    if not expected or given != expected:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+        events = body["events"]
+        users = set()
+        totals = {}
+        revenue = 0.0
+        for e in events:
+            user = e["user"]
+            amount = float(e["amount"])
+            users.add(user)
+            if amount > 0:
+                revenue += amount
+                totals[user] = totals.get(user, 0.0) + amount
+    except Exception:
+        return JSONResponse({"error": "bad request body"}, status_code=400)
+
+    top_user = max(totals, key=totals.get) if totals else None
+    return {
+        "email": EMAIL,
+        "total_events": len(events),
+        "unique_users": len(users),
+        "revenue": round(revenue, 6),
+        "top_user": top_user,
+    }
